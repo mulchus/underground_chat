@@ -18,14 +18,18 @@ async def main():
     data = await reader.read(100)
     logging.info(f'Received: {data.decode()}')
     
-    message = '0a85606e-83ba-11ee-aae7-0242ac110002\n'
+    message = '0a85606e-83ba-11ee-aae7-0242ac110002--\n'
     writer.write(message.encode())
     await writer.drain()
 
-    await asyncio.sleep(1)
     data = await reader.read(100)
-    decode_answer = data.decode()
-    logging.info(f'Received: {decode_answer}')
+    if 'null' in data.decode():
+        logging.info('Неизвестный токен. Проверьте его или зарегистрируйте заново.')
+        writer.close()
+        await writer.wait_closed()
+        return
+    else:
+        logging.info(f'Received: {data.decode()}')
     
     message = 'rECEIVED: hELLO %USERNAME%! ....\n\n'
     writer.write(message.encode())
