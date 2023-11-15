@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import logging
 import time
+import socket
 
 
 def get_args():
@@ -42,7 +43,7 @@ def fix_message(parser_args, message):
         logging.info(message)
     else:
         print(message)
-        
+
 
 async def main():
     parser_args = get_args()
@@ -56,27 +57,28 @@ async def main():
             encoding='utf-8',
             level=logging.INFO
         )
-    
-    reader, writer = await asyncio.open_connection(host, port)
-    
-    try:
-        # with open('chat.txt', '+a', encoding='utf-8') as file:
-        while True:
-            data = await reader.readuntil(separator=b'\n')
-            message = f'{time.strftime("%d.%m.%Y %H:%M")}: {data.decode()}'
-            fix_message(parser_args, message)
-            # file.writelines(message)
-    except asyncio.exceptions.CancelledError:
-        fix_message(parser_args, f'{time.strftime("%d.%m.%Y %H:%M")}: Close the connection')
-    except IndexError:
-        fix_message(parser_args, f'{time.strftime("%d.%m.%Y %H:%M")}: IndexError')
-    except SystemExit :
-        fix_message(parser_args, f'{time.strftime("%d.%m.%Y %H:%M")}: SystemExit error')
-    except (ConnectionAbortedError, Exception) as error:
-        fix_message(parser_args, f'{time.strftime("%d.%m.%Y %H:%M")}: {error}')
-    finally:
-        writer.close()
-        await writer.wait_closed()
+
+    reader, writer = None, None
+
+    while True:
+        if not reader:
+            try:
+                reader, writer = await asyncio.open_connection(host, port)
+            except socket.gaierror as error:
+                fix_message(parser_args, f'{time.strftime("%d.%m.%Y %H:%M:%S")}: Ошибка домена (IP адреса) {error}')
+                await asyncio.sleep(3)
+        else:
+            try:
+                while True:
+                    data = await reader.readuntil(separator=b'\n')
+                    message = f'{time.strftime("%d.%m.%Y %H:%M:%S")}: {data.decode()}'
+                    fix_message(parser_args, message)
+            except ConnectionAbortedError as error:
+                fix_message(parser_args, f'{time.strftime("%d.%m.%Y %H:%M:%S")}: ConnectionAbortedError {error}')
+                reader = None
+                writer.close()
+            except asyncio.exceptions.CancelledError as error:
+                fix_message(parser_args, f'{time.strftime("%d.%m.%Y %H:%M:%S")}: CancelledError {error}')
 
 
 if __name__ == "__main__":
