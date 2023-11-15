@@ -7,33 +7,36 @@ port = 5050
 
 async def main():
     reader, writer = await asyncio.open_connection(host, port)
-
-    print(reader, writer)
-
-    message = '0a85606e-83ba-11ee-aae7-0242ac110002'
-    # msg_byt = str.encode(message)
-    # print(type(msg_byt))
-    # print(msg_byt)
-
-    # print(str.encode(message))
-    # print(message.encode())
-    # message = ''
-    # print(str.encode(message))
-    # print(message.encode())
-
+    data = await reader.read(100)
+    print(f'Received: {data.decode()}')
+    
+    message = '0a85606e-83ba-11ee-aae7-0242ac110002\n'
     writer.write(message.encode())
+    await writer.drain()
+
+    await asyncio.sleep(1)
+    data = await reader.read(100)
+    decode_answer = data.decode()
+    print(f'Received: {decode_answer}')
+    
+    message = 'rECEIVED: hELLO %USERNAME%! ....\n\n'
     writer.write(message.encode())
-    message = ''
+    await writer.drain()
+    
+    data = await reader.read(100)
+    print(f'Received: {data.decode()}')
+    
+    message = 'вАШ КОД ОТПРАВЛЕН НА ПРОВЕРКУ. пРЕПОДАВАТЕЛЬ посмотрит и ответит в течение 1 рабочего дня..\n\n'
     writer.write(message.encode())
-
-    writer.write(str.encode(message))
-    message = ''
-    writer.write(str.encode(message))
-
-
-    # writer.close()
-    # await writer.wait_closed()
+    await writer.drain()
+    
+    data = await reader.read(100)
+    print(f'Received: {data.decode()}')
+   
+    writer.close()
+    await writer.wait_closed()
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
