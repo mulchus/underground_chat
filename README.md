@@ -50,12 +50,13 @@ pip install -r requirements.txt
 - --history [HISTORY]
 - --token [TOKEN]
 - --nickname [NICKNAME]
+
 и обязательная переменная - текст сообщения:
 - --message [YOUR SHORT OR LONG MESSAGE]
 
 
 ## Запуск
-Запустите скрипт чтения чата командой 
+Запустите скрипт чтения чата командой  
 ```shell
 python client.py [настройки командной строки]
 ```
@@ -72,10 +73,13 @@ python sender.py [настройки командной строки]
 python3 sender.py --message Всем привет! --host minechat.dvmn.org --sender_port 5050 --token 056124aa-846f-11ee-aae7-0242ac110002
 ```
 
-## Пример работы скриптов
-Окно чтения чата
 
-Окно регистрации и отправки сообщений
+## Пример работы скриптов
+Окно чтения чата  
+![client](https://github.com/mulchus/underground_chat/assets/111083714/44ba36d2-b1c3-4235-bd80-91b393b01a50)
+
+Окно регистрации и отправки сообщений  
+![sender](https://github.com/mulchus/underground_chat/assets/111083714/83e7576a-8146-4ba6-b131-eecee1a640a4)
 
 
 
