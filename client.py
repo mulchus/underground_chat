@@ -18,7 +18,7 @@ def get_args(env):
         help='хост сервера чата'
     )
     parser.add_argument(
-        '--port',
+        '--client_port',
         nargs='?',
         type=int,
         default=5000,
@@ -32,10 +32,10 @@ def get_args(env):
     )
 
     host = env('HOST') if env('HOST') else parser.parse_args().host
-    port = int(env('PORT')) if env('PORT') else parser.parse_args().port
+    client_port = int(env('CLIENT_PORT')) if env('CLIENT_PORT') else parser.parse_args().client_port
     history = env('HISTORY') if env('HISTORY') else parser.parse_args().history
 
-    return host, port, history
+    return host, client_port, history
 
 
 def fix_message(history, message):
@@ -48,10 +48,11 @@ def fix_message(history, message):
 async def main():
     env = Env()
     env.read_env()
-    host, port, history = get_args(env)
+    host, client_port, history = get_args(env)
     if history:
         Path.mkdir(Path.joinpath(Path.cwd(), history).parent, exist_ok=True)
-    print(f'Начинаем трансляцию из {host}:{port} в {Path.joinpath(Path.cwd(), history) if history else "терминал"}')
+    print(f'Начинаем трансляцию '
+          f'из {host}:{client_port} в {Path.joinpath(Path.cwd(), history) if history else "терминал"}')
 
     if history:
         logging.basicConfig(
@@ -65,7 +66,7 @@ async def main():
     while True:
         if not reader:
             try:
-                reader, writer = await asyncio.open_connection(host, port)
+                reader, writer = await asyncio.open_connection(host, client_port)
             except socket.gaierror as error:
                 fix_message(history, f'{time.strftime("%d.%m.%Y %H:%M:%S")}: Ошибка домена (IP адреса) {error}')
                 await asyncio.sleep(3)
