@@ -43,10 +43,7 @@ def fix_message(history, message):
         print(message)
 
 
-async def main():
-    env = Env()
-    env.read_env()
-    host, client_port, history = get_args(env)
+def configuring_logging(host, client_port, history):
     if history:
         Path.mkdir(Path.joinpath(Path.cwd(), history).parent, exist_ok=True)
     print(f'Начинаем трансляцию '
@@ -58,6 +55,14 @@ async def main():
             encoding='utf-8',
             level=logging.INFO
         )
+        
+
+async def main():
+    env = Env()
+    env.read_env()
+    host, client_port, history = get_args(env)
+    
+    configuring_logging(host, client_port, history)
 
     reader, writer = None, None
 
