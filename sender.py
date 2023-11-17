@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import logging
 import json
+import socket
 
 from environs import Env
 
@@ -19,14 +20,12 @@ def get_args(env):
         '--host',
         nargs='?',
         type=str,
-        default='minechat.dvmn.org',
         help='хост сервера чата'
     )
     parser.add_argument(
         '--sender_port',
         nargs='?',
         type=int,
-        default=5050,
         help='порт сервера чата'
     )
     parser.add_argument(
@@ -42,10 +41,10 @@ def get_args(env):
         help='никнейм (прозвище) зарегистрированного пользователя'
     )
 
-    host = parser.parse_args().host if parser.parse_args().host else env('HOST')
-    sender_port = parser.parse_args().sender_port if parser.parse_args().sender_port else int(env('SENDER_PORT'))
-    token = parser.parse_args().token if parser.parse_args().token else env('TOKEN')
-    nickname = ' '.join(parser.parse_args().nickname) if parser.parse_args().nickname else env('NICKNAME')
+    host = parser.parse_args().host if parser.parse_args().host else env('HOST', 'minechat.dvmn.org')
+    sender_port = parser.parse_args().sender_port if parser.parse_args().sender_port else int(env('SENDER_PORT', 5050))
+    token = parser.parse_args().token if parser.parse_args().token else env('TOKEN', '')
+    nickname = ' '.join(parser.parse_args().nickname) if parser.parse_args().nickname else env('NICKNAME', '')
     message = ' '.join(parser.parse_args().message)
 
     return message, host, sender_port, token, nickname
@@ -103,9 +102,13 @@ async def authorise(reader, writer, token):
         await writer.wait_closed()
         return False
     else:
-        user = json.loads((user.decode()).split('\n')[0])
-        token = user['account_hash']
-        nickname = user['nickname']
+        try:
+            user = json.loads((user.decode()).split('\n')[0])
+            token = user['account_hash']
+            nickname = user['nickname']
+        except json.JSONDecodeError:
+            logging.error(f'Ошибка. Проверьте настройки.')
+            return False
 
         logging.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
         return True
@@ -136,24 +139,33 @@ async def main():
     env = Env()
     env.read_env()
     message, host, server_port, token, nickname = get_args(env)
-
-    if not token:
-        reader, writer = await asyncio.open_connection(host, server_port)
-        token, nickname = await register(reader, writer)
-
-    reader, writer = await asyncio.open_connection(host, server_port)
-    if not await authorise(reader, writer, token):
+    
+    try:
+        if not token:
+            reader, writer = await asyncio.open_connection(host, server_port)
+            token, nickname = await register(reader, writer)
+    
+        try:
+            reader, writer = await asyncio.open_connection(host, server_port)
+            if not await authorise(reader, writer, token):
+                writer.close()
+                await writer.wait_closed()
+                return
+        except socket.gaierror as error:
+            logging.info(f'Ошибка. Проверьте настройки.{error}')
+            return
+    
+        if not message:
+            await submit_message(reader, writer, f'Всем привет!!!')
+        else:
+            await submit_message(reader, writer, message)
+        message = ''
+        while True:
+            await submit_message(reader, writer, message)
+    except (Exception, ConnectionResetError) as error:
+        logging.info(f'Непредвиденная ошибка. {error}')
         writer.close()
         await writer.wait_closed()
-        return
-
-    if not message:
-        await submit_message(reader, writer, f'Всем привет!!!')
-    else:
-        await submit_message(reader, writer, message)
-    message = ''
-    while True:
-        await submit_message(reader, writer, message)
 
 
 if __name__ == "__main__":
