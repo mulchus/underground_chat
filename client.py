@@ -14,14 +14,12 @@ def get_args(env):
         '--host',
         nargs='?',
         type=str,
-        default='minechat.dvmn.org',
         help='хост сервера чата'
     )
     parser.add_argument(
         '--client_port',
         nargs='?',
         type=int,
-        default=5000,
         help='порт сервера чата'
     )
     parser.add_argument(
@@ -31,9 +29,9 @@ def get_args(env):
         help='относительный путь к файлу сообщений чата, включая имя файла'
     )
 
-    host = env('HOST') if env('HOST') else parser.parse_args().host
-    client_port = int(env('CLIENT_PORT')) if env('CLIENT_PORT') else parser.parse_args().client_port
-    history = env('HISTORY') if env('HISTORY') else parser.parse_args().history
+    host = parser.parse_args().host if parser.parse_args().host else env('HOST', 'minechat.dvmn.org')
+    client_port = parser.parse_args().client_port if parser.parse_args().client_port else int(env('CLIENT_PORT', 5000))
+    history = parser.parse_args().history if parser.parse_args().history else env('HISTORY', '')
 
     return host, client_port, history
 
