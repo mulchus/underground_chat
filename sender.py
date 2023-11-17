@@ -162,10 +162,13 @@ async def main():
         message = ''
         while True:
             await submit_message(reader, writer, message)
-    except (Exception, ConnectionResetError) as error:
+    except (Exception) as error:
         logging.info(f'Непредвиденная ошибка. {error}')
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except UnboundLocalError:
+            pass
 
 
 if __name__ == "__main__":
