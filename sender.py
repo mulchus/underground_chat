@@ -128,7 +128,7 @@ async def submit_message(reader, writer, message):
     await reader.readuntil(separator=b'\n')
 
 
-async def main():
+def create_logger():
     logging.basicConfig(
         format='%(asctime)s | %(levelname)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
@@ -136,8 +136,19 @@ async def main():
         level=logging.INFO,
     )
 
-    env = Env()
-    env.read_env()
+
+async def send_mesages(reader, writer, message):
+    if not message:
+        await submit_message(reader, writer, f'Всем привет!!!')
+    else:
+        await submit_message(reader, writer, message)
+    message = ''
+    while True:
+        await submit_message(reader, writer, message)
+
+
+async def main():
+    create_logger()
     message, host, server_port, token, nickname = get_args(env)
     
     try:
@@ -152,18 +163,13 @@ async def main():
                 await writer.wait_closed()
                 return
         except socket.gaierror as error:
-            logging.info(f'Ошибка. Проверьте настройки.{error}')
+            logging.error(f'Ошибка. Проверьте настройки.{error}')
             return
-    
-        if not message:
-            await submit_message(reader, writer, f'Всем привет!!!')
-        else:
-            await submit_message(reader, writer, message)
-        message = ''
-        while True:
-            await submit_message(reader, writer, message)
+
+        await send_mesages(reader, writer, message)
+
     except (Exception) as error:
-        logging.info(f'Непредвиденная ошибка. {error}')
+        logging.error(f'Непредвиденная ошибка. {error}')
         try:
             writer.close()
             await writer.wait_closed()
@@ -172,5 +178,7 @@ async def main():
 
 
 if __name__ == "__main__":
+    env = Env()
+    env.read_env()
     asyncio.run(main())
     
