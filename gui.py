@@ -49,6 +49,7 @@ async def update_tk(root_frame, interval=1 / 120):
 
 async def update_conversation_history(panel, messages_queue):
     while True:
+        print('update_conversation_history')
         msg = await messages_queue.get()
 
         panel['state'] = 'normal'
@@ -70,6 +71,7 @@ async def update_status_panel(status_labels, status_updates_queue):
     nickname_label['text'] = f'Имя пользователя: неизвестно'
 
     while True:
+        print('update_status_panel')
         msg = await status_updates_queue.get()
         if isinstance(msg, ReadConnectionStateChanged):
             read_label['text'] = f'Чтение: {msg}'
@@ -131,3 +133,5 @@ async def draw(messages_queue, sending_queue, status_updates_queue):
         update_conversation_history(conversation_panel, messages_queue),
         update_status_panel(status_labels, status_updates_queue)
     )
+    
+    print('ВСЕ')
