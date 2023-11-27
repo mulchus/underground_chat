@@ -95,6 +95,9 @@ if __name__ == "__main__":
     sending_queue = asyncio.Queue()
     status_updates_queue = asyncio.Queue()
 
+    messages_queue.put_nowait('Привет обитателям чата!')
+    messages_queue.put_nowait('Как дела?')
+
     loop.run_until_complete(gui.draw(messages_queue, sending_queue, status_updates_queue))
 
     asyncio.run(main())

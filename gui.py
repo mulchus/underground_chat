@@ -131,5 +131,3 @@ async def draw(messages_queue, sending_queue, status_updates_queue):
         update_conversation_history(conversation_panel, messages_queue),
         update_status_panel(status_labels, status_updates_queue)
     )
-
-
