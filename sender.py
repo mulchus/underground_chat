@@ -7,7 +7,7 @@ import socket
 from environs import Env
 
 
-def get_args(env):
+def get_args(environ):
     parser = argparse.ArgumentParser(description='Скрипт чтения подпольного чата')
     parser.add_argument(
         '--message',
@@ -41,10 +41,11 @@ def get_args(env):
         help='никнейм (прозвище) зарегистрированного пользователя'
     )
 
-    host = parser.parse_args().host if parser.parse_args().host else env('HOST', 'minechat.dvmn.org')
-    sender_port = parser.parse_args().sender_port if parser.parse_args().sender_port else int(env('SENDER_PORT', 5050))
-    token = parser.parse_args().token if parser.parse_args().token else env('TOKEN', '')
-    nickname = ' '.join(parser.parse_args().nickname) if parser.parse_args().nickname else env('NICKNAME', '')
+    host = parser.parse_args().host if parser.parse_args().host else environ('HOST', 'minechat.dvmn.org')
+    sender_port = parser.parse_args().sender_port if parser.parse_args().sender_port \
+        else int(environ('SENDER_PORT', 5050))
+    token = parser.parse_args().token if parser.parse_args().token else environ('TOKEN', '')
+    nickname = ' '.join(parser.parse_args().nickname) if parser.parse_args().nickname else environ('NICKNAME', '')
     message = ' '.join(parser.parse_args().message)
 
     return message, host, sender_port, token, nickname
@@ -168,7 +169,7 @@ async def main():
 
         await send_mesages(reader, writer, message)
 
-    except (Exception) as error:
+    except Exception as error:
         logging.error(f'Непредвиденная ошибка. {error}')
         try:
             writer.close()
