@@ -87,8 +87,8 @@ async def authorise(reader, writer, token):
             logging.error('Ошибка. Проверьте настройки.')
             return False
 
-        logging.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
-        messages_queue.put_nowait(f'Успешная Авторизация пользователя {nickname}')
+        # logging.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
+        # messages_queue.put_nowait(f'Успешная Авторизация пользователя {nickname}')
         event = gui.NicknameReceived(f' {nickname}')
         status_updates_queue.put_nowait(event)
         return True
@@ -141,8 +141,12 @@ async def put_message_to_server(reader, writer, message):
     await reader.readuntil(separator=b'\n')
 
 
-async def send_msgs(reader, writer):
+async def send_msgs(host, sender_port, token):
     while True:
+        try:
+            reader, writer = await chat_connection(host, sender_port, token)
+        except TypeError:
+            await asyncio.sleep(0)
         try:
             message = await sending_queue.get()
             await put_message_to_server(reader, writer, message)
@@ -150,10 +154,10 @@ async def send_msgs(reader, writer):
             logging.error(f'ConnectionAbortedError {error}')
             reader = None
             writer.close()
-            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
         except asyncio.exceptions.CancelledError as error:
             logging.error(f'CancelledError {error}')
-            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
 
 
 async def save_messages_to_file():
@@ -183,6 +187,12 @@ async def chat_connection(host, sender_port, token):
                 writer.close()
                 await writer.wait_closed()
                 raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
+        except ConnectionAbortedError as error:
+            logging.error(f'ConnectionAbortedError {error}')
+            reader = None
+            writer.close()
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
+            await asyncio.sleep(0)
         except socket.gaierror as error:
             logging.error(f'Ошибка. Проверьте настройки.{error}')
             return
@@ -205,15 +215,12 @@ async def main():
     if Path.is_file(filepath):
         load_old_messages(filepath)
 
-    try:
-        reader, writer = await chat_connection(host, sender_port, token)
-    except TypeError:
-        return
+    await chat_connection(host, sender_port, token)
 
     # обработка сообщений в циклах корутин
     await asyncio.gather(
         read_msgs(host, client_port),
-        send_msgs(reader, writer),
+        send_msgs(host, sender_port, token),
         save_messages_to_file(),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
     )
