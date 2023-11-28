@@ -1,9 +1,18 @@
 import tkinter as tk
 import asyncio
 from tkinter.scrolledtext import ScrolledText
+from tkinter import ttk
 from enum import Enum
+from tkinter import messagebox
 
 
+class InvalidToken(Exception):
+    def __init__(self, title, message):
+        super().__init__(title)
+        messagebox.showerror(title, message)
+        ttk.Button(command=exit())
+    
+    
 class TkAppClosed(Exception):
     pass
 
