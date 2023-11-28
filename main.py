@@ -3,6 +3,7 @@ import gui
 import argparse
 import logging
 import socket
+import json
 
 from time import strftime, localtime
 from environs import Env
@@ -75,6 +76,35 @@ def get_args(environ):
     return host, sender_port, client_port, token, nickname, history
 
 
+async def authorise(reader, writer, token):
+    await reader.readuntil(separator=b'\n')     # не удалять, т.к. нарушается количество считанных от сервера сообщений
+
+    writer.write((token + '\n').encode())
+    await writer.drain()
+
+    user = await reader.readuntil(separator=b'\n')
+    if 'null' in user.decode():
+        logging.info('Неизвестный токен. Проверьте его или удалите из настроек.')
+        writer.close()
+        await writer.wait_closed()
+        return False
+    else:
+        try:
+            user = json.loads((user.decode()).split('\n')[0])
+            token = user['account_hash']
+            nickname = user['nickname']
+        except json.JSONDecodeError:
+            logging.error(f'Ошибка. Проверьте настройки.')
+            return False
+
+        logging.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
+        # print(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
+        messages_queue.put_nowait(f'Успешная Авторизация пользователя {nickname}')
+        event = gui.NicknameReceived(f'{nickname}')
+        status_updates_queue.put_nowait(event)
+        return True
+
+
 def fix_message(history, message):
     if history:
         logging.info(message)
@@ -144,6 +174,8 @@ def load_old_messages(filepath):
             messages_queue.put_nowait(line)
 
 
+
+
 async def main():
     host, sender_port, client_port, token, nickname, history = get_args(env)
     filepath = Path.joinpath(Path.cwd(), history)
@@ -153,8 +185,30 @@ async def main():
     if Path.is_file(filepath):
         load_old_messages(filepath)
 
+    try:
+        # if not token:
+        #     reader, writer = await asyncio.open_connection(host, sender_port)
+        #     token, nickname = await register(reader, writer)
+        print(token)
+        try:
+            reader, writer = await asyncio.open_connection(host, sender_port)
+            if not await authorise(reader, writer, token):
+                writer.close()
+                await writer.wait_closed()
+                return
+        except socket.gaierror as error:
+            logging.error(f'Ошибка. Проверьте настройки.{error}')
+            return
+    except Exception as error:
+        logging.error(f'Непредвиденная ошибка. {error}')
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except UnboundLocalError:
+            pass
+
     await asyncio.gather(
-        # read_msgs(host, client_port, history),
+        read_msgs(host, client_port, history),
         send_msgs(host, sender_port),
         save_messages(),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
