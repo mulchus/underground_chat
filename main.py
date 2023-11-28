@@ -5,7 +5,7 @@ import logging
 import socket
 import json
 
-from time import strftime, localtime
+from time import strftime
 from environs import Env
 from pathlib import Path
 
@@ -84,7 +84,7 @@ async def authorise(reader, writer, token):
 
     user = await reader.readuntil(separator=b'\n')
     if 'null' in user.decode():
-        logging.info('Неизвестный токен. Проверьте его или удалите из настроек.')
+        logging.warning('{strftime("%d.%m.%Y %H:%M:%S")}: Неизвестный токен. Проверьте его или удалите из настроек.')
         writer.close()
         await writer.wait_closed()
         return False
@@ -94,22 +94,14 @@ async def authorise(reader, writer, token):
             token = user['account_hash']
             nickname = user['nickname']
         except json.JSONDecodeError:
-            logging.error(f'Ошибка. Проверьте настройки.')
+            logging.error(f'{strftime("%d.%m.%Y %H:%M:%S")}: Ошибка. Проверьте настройки.')
             return False
 
-        logging.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
-        # print(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
+        logging.info(f'{strftime("%d.%m.%Y %H:%M:%S")}: Успешная Авторизация пользователя {nickname} с токеном {token}')
         messages_queue.put_nowait(f'Успешная Авторизация пользователя {nickname}')
         event = gui.NicknameReceived(f'{nickname}')
         status_updates_queue.put_nowait(event)
         return True
-
-
-def fix_message(history, message):
-    if history:
-        logging.info(message)
-    else:
-        print(message)
 
 
 def configuring_logging(host, client_port, history):
@@ -118,10 +110,10 @@ def configuring_logging(host, client_port, history):
         encoding='utf-8',
         level=logging.INFO
     )
-    print(f'Начинаем трансляцию из {host}:{client_port} в {Path.joinpath(Path.cwd(), history)}')
+    logging.info(f' Начинаем трансляцию из {host}:{client_port} в {Path.joinpath(Path.cwd(), history)}')
 
 
-async def read_msgs(host, client_port, history):
+async def read_msgs(host, client_port):
     reader, writer = None, None
     while True:
         if not reader:
@@ -130,7 +122,7 @@ async def read_msgs(host, client_port, history):
                 reader, writer = await asyncio.open_connection(host, client_port)
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
             except socket.gaierror as error:
-                fix_message(history, f'{strftime("%d.%m.%Y %H:%M:%S")}: Ошибка домена (IP адреса) {error}')
+                logging.error(f'{strftime("%d.%m.%Y %H:%M:%S")}: Ошибка домена (IP адреса) {error}')
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
                 await asyncio.sleep(3)
         else:
@@ -141,31 +133,41 @@ async def read_msgs(host, client_port, history):
                     messages_queue.put_nowait(message)
                     messages_to_save_queue.put_nowait(message)
             except ConnectionAbortedError as error:
-                fix_message(history, f'{strftime("%d.%m.%Y %H:%M:%S")}: ConnectionAbortedError {error}')
+                logging.error(f'{strftime("%d.%m.%Y %H:%M:%S")}: ConnectionAbortedError {error}')
                 reader = None
                 writer.close()
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
             except asyncio.exceptions.CancelledError as error:
-                fix_message(history, f'{strftime("%d.%m.%Y %H:%M:%S")}: CancelledError {error}')
+                logging.error(f'{strftime("%d.%m.%Y %H:%M:%S")}: CancelledError {error}')
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
 
 
-async def send_msgs(host, sender_port):
-    while True:
-        msg = await sending_queue.get()
-        print(msg)
+async def put_message_to_server(reader, writer, message):
+    message += '\n\n'
+    writer.write(message.encode())
+    await writer.drain()
+    await reader.readuntil(separator=b'\n')
 
 
-async def generate_msgs():
+async def send_msgs(reader, writer):
     while True:
-        messages_queue.put_nowait(f'{strftime("%a, %d %b %Y %H:%M:%S %Z", localtime())}')
-        await asyncio.sleep(1)
+        try:
+            message = await sending_queue.get()
+            await put_message_to_server(reader, writer, message)
+        except ConnectionAbortedError as error:
+            logging.error(f'{strftime("%d.%m.%Y %H:%M:%S")}: ConnectionAbortedError {error}')
+            reader = None
+            writer.close()
+            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
+        except asyncio.exceptions.CancelledError as error:
+            logging.error(f'{strftime("%d.%m.%Y %H:%M:%S")}: CancelledError {error}')
+            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
 
 
 async def save_messages():
     while True:
-        msg = await messages_to_save_queue.get()
-        logging.info(msg)
+        message = await messages_to_save_queue.get()
+        logging.info(message)
 
 
 def load_old_messages(filepath):
@@ -174,6 +176,32 @@ def load_old_messages(filepath):
             messages_queue.put_nowait(line)
 
 
+async def chat_connection(host, sender_port, token):
+    # подключение к чату - авторизация с регистрацией (при необходимости)
+    reader, writer = None, None
+    try:
+        # if not token:
+        #     reader, writer = await asyncio.open_connection(host, sender_port)
+        #     token, nickname = await register(reader, writer)
+        try:
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
+            reader, writer = await asyncio.open_connection(host, sender_port)
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
+            if not await authorise(reader, writer, token):
+                writer.close()
+                await writer.wait_closed()
+                return
+        except socket.gaierror as error:
+            logging.error(f' Ошибка. Проверьте настройки.{error}')
+            return
+    except Exception as error:
+        logging.error(f' Непредвиденная ошибка. {error}')
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except UnboundLocalError:
+            pass
+    return reader, writer
 
 
 async def main():
@@ -186,30 +214,14 @@ async def main():
         load_old_messages(filepath)
 
     try:
-        # if not token:
-        #     reader, writer = await asyncio.open_connection(host, sender_port)
-        #     token, nickname = await register(reader, writer)
-        print(token)
-        try:
-            reader, writer = await asyncio.open_connection(host, sender_port)
-            if not await authorise(reader, writer, token):
-                writer.close()
-                await writer.wait_closed()
-                return
-        except socket.gaierror as error:
-            logging.error(f'Ошибка. Проверьте настройки.{error}')
-            return
-    except Exception as error:
-        logging.error(f'Непредвиденная ошибка. {error}')
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except UnboundLocalError:
-            pass
+        reader, writer = await chat_connection(host, sender_port, token)
+    except TypeError:
+        return
 
+    # обработка сообщений в циклах корутин
     await asyncio.gather(
-        read_msgs(host, client_port, history),
-        send_msgs(host, sender_port),
+        read_msgs(host, client_port),
+        send_msgs(reader, writer),
         save_messages(),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
     )
