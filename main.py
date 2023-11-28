@@ -120,6 +120,12 @@ async def read_msgs(host, client_port, history):
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
 
 
+async def send_msgs(host, sender_port):
+    while True:
+        msg = await sending_queue.get()
+        print(msg)
+
+
 async def generate_msgs():
     while True:
         messages_queue.put_nowait(f'{strftime("%a, %d %b %Y %H:%M:%S %Z", localtime())}')
@@ -148,7 +154,8 @@ async def main():
         load_old_messages(filepath)
 
     await asyncio.gather(
-        read_msgs(host, client_port, history),
+        # read_msgs(host, client_port, history),
+        send_msgs(host, sender_port),
         save_messages(),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
     )
