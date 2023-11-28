@@ -121,7 +121,7 @@ async def read_msgs(host, client_port):
             try:
                 while True:
                     data = await reader.readuntil(separator=b'\n')
-                    message = f'{data.decode()}'
+                    message = str(f'{data.decode()}').replace('\n', '')
                     messages_queue.put_nowait(message)
                     messages_to_save_queue.put_nowait(message)
             except ConnectionAbortedError as error:
@@ -156,16 +156,16 @@ async def send_msgs(reader, writer):
             status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
 
 
-async def save_messages():
+async def save_messages_to_file():
     while True:
         message = await messages_to_save_queue.get()
         logging.info(message.replace('\n', ''))
 
 
 def load_old_messages(filepath):
-    with open(filepath, 'r') as file:
+    with open(filepath, 'rb') as file:
         for line in file:
-            messages_queue.put_nowait(line)
+            messages_queue.put_nowait(line.decode().replace('\n', ''))
 
 
 async def chat_connection(host, sender_port, token):
@@ -214,7 +214,7 @@ async def main():
     await asyncio.gather(
         read_msgs(host, client_port),
         send_msgs(reader, writer),
-        save_messages(),
+        save_messages_to_file(),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
     )
 
