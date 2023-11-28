@@ -9,6 +9,12 @@ from environs import Env
 from pathlib import Path
 
 
+messages_queue = asyncio.Queue()
+sending_queue = asyncio.Queue()
+status_updates_queue = asyncio.Queue()
+messages_to_save_queue = asyncio.Queue()
+
+
 def create_logger():
     logging.basicConfig(
         format='%(asctime)s | %(levelname)s | %(message)s',
@@ -64,7 +70,7 @@ def get_args(environ):
         else int(environ('CLIENT_PORT', 5000))
     token = parser.parse_args().token if parser.parse_args().token else environ('TOKEN', '')
     nickname = ' '.join(parser.parse_args().nickname) if parser.parse_args().nickname else environ('NICKNAME', '')
-    history = parser.parse_args().history if parser.parse_args().history else environ('HISTORY', '')
+    history = parser.parse_args().history if parser.parse_args().history else environ('HISTORY', 'chat.txt')
 
     return host, sender_port, client_port, token, nickname, history
 
@@ -77,27 +83,25 @@ def fix_message(history, message):
 
 
 def configuring_logging(host, client_port, history):
-    if history:
-        Path.mkdir(Path.joinpath(Path.cwd(), history).parent, exist_ok=True)
-    print(f'Начинаем трансляцию '
-          f'из {host}:{client_port} в {Path.joinpath(Path.cwd(), history) if history else "терминал"}')
-
-    if history:
-        logging.basicConfig(
-            filename=history,
-            encoding='utf-8',
-            level=logging.INFO
-        )
+    logging.basicConfig(
+        filename=history,
+        encoding='utf-8',
+        level=logging.INFO
+    )
+    print(f'Начинаем трансляцию из {host}:{client_port} в {Path.joinpath(Path.cwd(), history)}')
 
 
-async def read_msgs(host, client_port, messages_queue, history):
+async def read_msgs(host, client_port, history):
     reader, writer = None, None
     while True:
         if not reader:
             try:
+                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
                 reader, writer = await asyncio.open_connection(host, client_port)
+                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
             except socket.gaierror as error:
                 fix_message(history, f'{strftime("%d.%m.%Y %H:%M:%S")}: Ошибка домена (IP адреса) {error}')
+                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
                 await asyncio.sleep(3)
         else:
             try:
@@ -105,31 +109,47 @@ async def read_msgs(host, client_port, messages_queue, history):
                     data = await reader.readuntil(separator=b'\n')
                     message = f'{strftime("%d.%m.%Y %H:%M:%S")}: {data.decode()}'
                     messages_queue.put_nowait(message)
-                    fix_message(history, message)
+                    messages_to_save_queue.put_nowait(message)
             except ConnectionAbortedError as error:
                 fix_message(history, f'{strftime("%d.%m.%Y %H:%M:%S")}: ConnectionAbortedError {error}')
                 reader = None
                 writer.close()
+                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
             except asyncio.exceptions.CancelledError as error:
                 fix_message(history, f'{strftime("%d.%m.%Y %H:%M:%S")}: CancelledError {error}')
+                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
 
 
-async def generate_msgs(messages_queue):
+async def generate_msgs():
     while True:
         messages_queue.put_nowait(f'{strftime("%a, %d %b %Y %H:%M:%S %Z", localtime())}')
         await asyncio.sleep(1)
 
 
-async def main():
-    messages_queue = asyncio.Queue()
-    sending_queue = asyncio.Queue()
-    status_updates_queue = asyncio.Queue()
+async def save_messages():
+    while True:
+        msg = await messages_to_save_queue.get()
+        logging.info(msg)
 
+
+def load_old_messages(filepath):
+    with open(filepath, 'r') as file:
+        for line in file:
+            messages_queue.put_nowait(line)
+
+
+async def main():
     host, sender_port, client_port, token, nickname, history = get_args(env)
+    filepath = Path.joinpath(Path.cwd(), history)
+    Path.mkdir(filepath.parent, exist_ok=True)
     configuring_logging(host, client_port, history)
 
+    if Path.is_file(filepath):
+        load_old_messages(filepath)
+
     await asyncio.gather(
-        read_msgs(host, client_port, messages_queue, history),
+        read_msgs(host, client_port, history),
+        save_messages(),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
     )
 
