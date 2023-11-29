@@ -8,6 +8,7 @@ import json
 from environs import Env
 from pathlib import Path
 from async_timeout import timeout
+from anyio import sleep, create_task_group, run
 
 
 messages_queue = asyncio.Queue()
@@ -190,12 +191,19 @@ def load_old_messages(filepath):
 
 async def watch_for_connection(host, sender_port, token):
     while True:
+        # raise ConnectionError
         async with timeout(5) as cm:
             watchdog_message = await watchdog_queue.get()
             if watchdog_message:
                 watchdog_logger.info(watchdog_message)
         if cm.expired:
             await chat_connection(host, sender_port, token)
+
+
+async def handle_connection(host, sender_port, token):
+    await chat_connection(host, sender_port, token)
+    # while True:
+    #     await sleep(.01)
 
 
 async def chat_connection(host, sender_port, token):
@@ -247,16 +255,32 @@ async def main():
     await chat_connection(host, sender_port, token)
 
     # обработка сообщений в циклах корутин
-    await asyncio.gather(
-        read_msgs(host, client_port),
-        send_msgs(host, sender_port, token),
-        save_messages_to_file(),
-        watch_for_connection(host, sender_port, token),
-        gui.draw(messages_queue, sending_queue, status_updates_queue),
-    )
+    # await asyncio.gather(
+    #     read_msgs(host, client_port),
+    #     send_msgs(host, sender_port, token),
+    #     save_messages_to_file(),
+    #     watch_for_connection(host, sender_port, token),
+    #     gui.draw(messages_queue, sending_queue, status_updates_queue),
+    # )
+    
+    try:
+        async with create_task_group() as task_group:
+            task_group.start_soon(read_msgs, host, client_port)
+            task_group.start_soon(send_msgs, host, sender_port, token)
+            task_group.start_soon(save_messages_to_file)
+            task_group.start_soon(watch_for_connection, host, sender_port, token)
+            task_group.start_soon(gui.draw, messages_queue, sending_queue, status_updates_queue)
+    except* ConnectionError as excgroup:
+        for exc in excgroup.exceptions:
+            print(exc)
+            # await chat_connection(host, sender_port, token)
+            await handle_connection(host, sender_port, token)
+            
+    print('All tasks finished!')
 
 
 if __name__ == "__main__":
     env = Env()
     env.read_env()
-    asyncio.run(main())
+    # asyncio.run(main())
+    run(main)
