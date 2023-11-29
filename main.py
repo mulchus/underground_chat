@@ -7,6 +7,7 @@ import json
 
 from environs import Env
 from pathlib import Path
+from async_timeout import timeout
 
 
 messages_queue = asyncio.Queue()
@@ -187,11 +188,14 @@ def load_old_messages(filepath):
             messages_queue.put_nowait(line.decode().replace('\n', ''))
 
 
-async def watch_for_connection():
+async def watch_for_connection(host, sender_port, token):
     while True:
-        watchdog_message = await watchdog_queue.get()
-        if watchdog_message:
-            watchdog_logger.info(watchdog_message)
+        async with timeout(5) as cm:
+            watchdog_message = await watchdog_queue.get()
+            if watchdog_message:
+                watchdog_logger.info(watchdog_message)
+        if cm.expired:
+            await chat_connection(host, sender_port, token)
 
 
 async def chat_connection(host, sender_port, token):
@@ -242,13 +246,12 @@ async def main():
     watchdog_queue.put_nowait(f'Connection is alive. Prompt before auth')
     await chat_connection(host, sender_port, token)
 
-
     # обработка сообщений в циклах корутин
     await asyncio.gather(
         read_msgs(host, client_port),
         send_msgs(host, sender_port, token),
         save_messages_to_file(),
-        watch_for_connection(),
+        watch_for_connection(host, sender_port, token),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
     )
 

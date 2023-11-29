@@ -1,1 +1,2 @@
 environs==9.5.*
+async-timeout==4.0.*
