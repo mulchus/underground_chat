@@ -13,6 +13,11 @@ messages_queue = asyncio.Queue()
 sending_queue = asyncio.Queue()
 status_updates_queue = asyncio.Queue()
 messages_to_save_queue = asyncio.Queue()
+watchdog_queue = asyncio.Queue()
+
+
+file_logger = logging.getLogger('file_logger')
+watchdog_logger = logging.getLogger('watchdog_logger')
 
 
 def get_args(environ):
@@ -74,7 +79,7 @@ async def authorise(reader, writer, token):
 
     user = await reader.readuntil(separator=b'\n')
     if 'null' in user.decode():
-        logging.warning('Неизвестный токен. Проверьте его или удалите из настроек.')
+        watchdog_logger.warning('Неизвестный токен. Проверьте его или удалите из настроек.')
         writer.close()
         await writer.wait_closed()
         return False
@@ -84,25 +89,33 @@ async def authorise(reader, writer, token):
             token = user['account_hash']
             nickname = user['nickname']
         except json.JSONDecodeError:
-            logging.error('Ошибка. Проверьте настройки.')
+            watchdog_logger.error('Ошибка. Проверьте настройки.')    # , exc_info=True)
             return False
 
-        # logging.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
+        # file_logger.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
         # messages_queue.put_nowait(f'Успешная Авторизация пользователя {nickname}')
         event = gui.NicknameReceived(f' {nickname}')
         status_updates_queue.put_nowait(event)
+        watchdog_queue.put_nowait(f'Connection is alive. Authorization done')
         return True
 
 
-def configuring_logging(host, client_port, history):
-    logging.basicConfig(
-        filename=history,
-        format='%(asctime)s | %(levelname)s | %(message)s',
-        datefmt='%d-%m-%Y %H:%M:%S',
-        encoding='utf-8',
-        level=logging.DEBUG,
-    )
-    logging.info(f'Начинаем трансляцию из {host}:{client_port} в {Path.joinpath(Path.cwd(), history)}')
+def configuring_logging(history):
+    file_logger.setLevel(logging.INFO)
+    file_logger_handler = logging.FileHandler(filename=history, encoding='utf-8')
+    file_logger_formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(message)s',
+        datefmt='%d-%m-%Y %H:%M:%S')
+    file_logger_handler.setFormatter(file_logger_formatter)
+    file_logger.addHandler(file_logger_handler)
+
+    watchdog_logger.setLevel(logging.INFO)
+    watchdog_logger_handler = logging.StreamHandler()
+    watchdog_logger_formatter = logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(message)s',
+        datefmt='%d-%m-%Y %H:%M:%S')
+    watchdog_logger_handler.setFormatter(watchdog_logger_formatter)
+    watchdog_logger.addHandler(watchdog_logger_handler)
 
 
 async def read_msgs(host, client_port):
@@ -114,7 +127,7 @@ async def read_msgs(host, client_port):
                 reader, writer = await asyncio.open_connection(host, client_port)
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
             except socket.gaierror as error:
-                logging.error(f'Ошибка домена (IP адреса) {error}')
+                watchdog_logger.error(f'Ошибка домена (IP адреса) {error}')    # , exc_info=True)
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
                 await asyncio.sleep(3)
         else:
@@ -123,14 +136,15 @@ async def read_msgs(host, client_port):
                     data = await reader.readuntil(separator=b'\n')
                     message = str(f'{data.decode()}').replace('\n', '')
                     messages_queue.put_nowait(message)
+                    watchdog_queue.put_nowait(f'Connection is alive. New message in chat')
                     messages_to_save_queue.put_nowait(message)
             except ConnectionAbortedError as error:
-                logging.error(f'ConnectionAbortedError {error}')
+                watchdog_logger.error(f'ConnectionAbortedError {error}')    # , exc_info=True)
                 reader = None
                 writer.close()
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
             except asyncio.exceptions.CancelledError as error:
-                logging.error(f'CancelledError {error}')
+                watchdog_logger.error(f'CancelledError {error}')    # , exc_info=True)
                 status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
 
 
@@ -150,26 +164,34 @@ async def send_msgs(host, sender_port, token):
         try:
             message = await sending_queue.get()
             await put_message_to_server(reader, writer, message)
+            watchdog_queue.put_nowait(f'Connection is alive. Message sent')
         except ConnectionAbortedError as error:
-            logging.error(f'ConnectionAbortedError {error}')
+            watchdog_logger.error(f'ConnectionAbortedError {error}')    # , exc_info=True)
             reader = None
             writer.close()
             status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
         except asyncio.exceptions.CancelledError as error:
-            logging.error(f'CancelledError {error}')
+            watchdog_logger.error(f'CancelledError {error}')    # , exc_info=True)
             status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
 
 
 async def save_messages_to_file():
     while True:
         message = await messages_to_save_queue.get()
-        logging.info(message.replace('\n', ''))
+        file_logger.info(message.replace('\n', ''))
 
 
 def load_old_messages(filepath):
     with open(filepath, 'rb') as file:
         for line in file:
             messages_queue.put_nowait(line.decode().replace('\n', ''))
+
+
+async def watch_for_connection():
+    while True:
+        watchdog_message = await watchdog_queue.get()
+        if watchdog_message:
+            watchdog_logger.info(watchdog_message)
 
 
 async def chat_connection(host, sender_port, token):
@@ -188,16 +210,16 @@ async def chat_connection(host, sender_port, token):
                 await writer.wait_closed()
                 raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
         except ConnectionAbortedError as error:
-            logging.error(f'ConnectionAbortedError {error}')
+            watchdog_logger.error(f'ConnectionAbortedError {error}')    # , exc_info=True)
             reader = None
             writer.close()
             status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
             await asyncio.sleep(0)
         except socket.gaierror as error:
-            logging.error(f'Ошибка. Проверьте настройки.{error}')
+            watchdog_logger.error(f'Ошибка. Проверьте настройки.{error}')    # , exc_info=True)
             return
     except Exception as error:
-        logging.error(f'Непредвиденная ошибка. {error}')
+        watchdog_logger.error(f'Непредвиденная ошибка. {error}')    # , exc_info=True)
         try:
             writer.close()
             await writer.wait_closed()
@@ -210,18 +232,23 @@ async def main():
     host, sender_port, client_port, token, nickname, history = get_args(env)
     filepath = Path.joinpath(Path.cwd(), history)
     Path.mkdir(filepath.parent, exist_ok=True)
-    configuring_logging(host, client_port, history)
+    configuring_logging(history)
 
     if Path.is_file(filepath):
         load_old_messages(filepath)
 
+    file_logger.info(f'Начинаем трансляцию из {host}:{client_port} в {Path.joinpath(Path.cwd(), history)}')
+
+    watchdog_queue.put_nowait(f'Connection is alive. Prompt before auth')
     await chat_connection(host, sender_port, token)
+
 
     # обработка сообщений в циклах корутин
     await asyncio.gather(
         read_msgs(host, client_port),
         send_msgs(host, sender_port, token),
         save_messages_to_file(),
+        watch_for_connection(),
         gui.draw(messages_queue, sending_queue, status_updates_queue),
     )
 
