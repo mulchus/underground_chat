@@ -76,6 +76,18 @@ def get_args(environ):
     return host, sender_port, client_port, token, nickname, history
 
 
+def inform_everywhere(message):
+    file_logger.info(message)
+    watchdog_logger.info(message)
+    messages_queue.put_nowait(message)
+
+
+def send_error_everywhere(message):
+    file_logger.error(message)
+    watchdog_logger.error(message)
+    messages_queue.put_nowait(message)
+
+
 async def authorise(reader, writer, token):
     await reader.readuntil(separator=b'\n')     # не удалять, т.к. нарушается количество считанных от сервера сообщений
 
@@ -84,24 +96,14 @@ async def authorise(reader, writer, token):
 
     user = await reader.readuntil(separator=b'\n')
     if 'null' in user.decode():
-        watchdog_logger.warning('Неизвестный токен. Проверьте его или удалите из настроек.')
-        # writer.close()
-        # await writer.wait_closed()
         return False
     else:
-        try:
-            user = json.loads((user.decode()).split('\n')[0])
-            token = user['account_hash']
-            nickname = user['nickname']
-        except json.JSONDecodeError:
-            watchdog_logger.error('Ошибка. Проверьте настройки.')    # , exc_info=True)
-            return False
-
-        # file_logger.info(f'Успешная Авторизация пользователя {nickname} с токеном {token}')
-        # messages_queue.put_nowait(f'Успешная Авторизация пользователя {nickname}')
+        user = json.loads((user.decode()).split('\n')[0])
+        # token = user['account_hash']
+        nickname = user['nickname']
+        inform_everywhere(f'Успешная авторизация пользователя {nickname}.')
         event = gui.NicknameReceived(f' {nickname}')
         status_updates_queue.put_nowait(event)
-        watchdog_queue.put_nowait(f'Connection is alive. Authorization done')
         return True
 
 
@@ -128,17 +130,18 @@ async def read_msgs():
         data = await client_reader.readuntil(separator=b'\n')
         message = str(f'{data.decode()}').replace('\n', '')
         messages_queue.put_nowait(message)
-        watchdog_queue.put_nowait(f'Connection is alive. New message in chat')
         messages_to_save_queue.put_nowait(message)
+        watchdog_queue.put_nowait(f'Соединение стабильно. Новое сообщение в чате.')
 
 
 async def send_msgs():
-    message = await sending_queue.get()
-    message += '\n\n'
-    sender_writer.write(message.encode())
-    await sender_writer.drain()
-    await sender_reader.readuntil(separator=b'\n')
-    watchdog_queue.put_nowait(f'Connection is alive. Message sent')
+    while True:
+        message = await sending_queue.get()
+        message += '\n\n'
+        sender_writer.write(message.encode())
+        await sender_writer.drain()
+        await sender_reader.readuntil(separator=b'\n')
+        watchdog_queue.put_nowait(f'Соединение стабильно. Сообщение отправлено.')
 
 
 async def save_messages_to_file():
@@ -153,23 +156,28 @@ def load_old_messages(filepath):
             messages_queue.put_nowait(line.decode().replace('\n', ''))
 
 
-async def watch_for_connection(host, sender_port, token):
+async def watch_for_connection():
     while True:
         # raise ConnectionError
-        async with timeout(5) as cm:
-            watchdog_message = await watchdog_queue.get()
-            if watchdog_message:
-                watchdog_logger.info(watchdog_message)
-        if cm.expired:
+        try:
+            async with timeout(5):  # as cm:
+                watchdog_message = await watchdog_queue.get()
+                if watchdog_message:
+                    watchdog_logger.info(watchdog_message)
+        except TimeoutError:
+        # if cm.expired:
+            send_error_everywhere('Длительное бездействие. Попытка переподключения к сети.')
             raise ConnectionError
-            # await chat_connection(host, sender_port, token)
 
 
 async def connection_close():
     global client_reader, client_writer, sender_reader, sender_writer
     time.sleep(1)
-    client_writer.close()
-    sender_writer.close()
+    try:    # при запуске скрипта без интернета выдает AttributeError, надо игнорить
+        client_writer.close()
+        sender_writer.close()
+    except AttributeError:
+        exit()
     status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
     status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
 
@@ -179,76 +187,59 @@ async def handle_connection(host, client_port, sender_port, token):
     while True:
         try:
             async with create_task_group() as task_group:
-                task_group.start_soon(watch_for_connection, host, sender_port, token)
+                task_group.start_soon(watch_for_connection)
                 task_group.start_soon(read_msgs)
                 task_group.start_soon(send_msgs)
-         
+
         except* (ConnectionError, KeyboardInterrupt, asyncio.exceptions.CancelledError) as excgroup:
             for exc in excgroup.exceptions:
                 task_group.cancel_scope.cancel()
+            # TODO: это сообщение надо как то сделать однократным, а не в цикле корутины
+            # file_logger.info('Ошибка соединения...')
                 
-        try:
-            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
-            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
-            
-            client_reader, client_writer = await asyncio.open_connection(host, client_port)
-            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
-            
-            sender_reader, sender_writer = await asyncio.open_connection(host, sender_port)
-            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
-            
-            authorised = await authorise(sender_reader, sender_writer, token)
-            if not authorised:
-                sender_writer.close()
-                await sender_writer.wait_closed()
-                try:
-                    raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
-                except SystemExit:
-                    break
-        
-        except ConnectionAbortedError as error:
-            watchdog_logger.error(f'ConnectionAbortedError {error}')  # , exc_info=True)
-            await connection_close()
-        except socket.gaierror as error:
-            watchdog_logger.error(f'Ошибка. Проверьте настройки.{error}')  # , exc_info=True)
-            await connection_close()
-        except Exception as error:
-            watchdog_logger.error(f'Непредвиденная ошибка. {error}')  # , exc_info=True)
-            await connection_close()
-            
+        await chat_connection(host, client_port, sender_port, token)
 
-async def chat_connection(host, sender_port, token):
+
+async def chat_connection(host, client_port, sender_port, token):
+    global client_reader, client_writer, sender_reader, sender_writer
     # подключение к чату - авторизация с регистрацией (при необходимости)
-    reader, writer = None, None
+
     try:
+        status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
+        status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
+
+        client_reader, client_writer = await asyncio.open_connection(host, client_port)
+        status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
+
+        sender_reader, sender_writer = await asyncio.open_connection(host, sender_port)
+        status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
+
         # if not token:
-        #     reader, writer = await asyncio.open_connection(host, sender_port)
-        #     token, nickname = await register(reader, writer)
-        try:
-            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
-            reader, writer = await asyncio.open_connection(host, sender_port)
-            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
-            if not await authorise(reader, writer, token):
-                writer.close()
-                await writer.wait_closed()
+        #     token, nickname = await register(sender_reader, sender_writer)
+        message = 'Успешное соединение с сервером.'
+        file_logger.info(message)
+        watchdog_queue.put_nowait(message)
+        messages_queue.put_nowait(message)
+
+        authorised = await authorise(sender_reader, sender_writer, token)
+        if not authorised:
+            sender_writer.close()
+            await sender_writer.wait_closed()
+            try:
+                send_error_everywhere('Неизвестный токен. Проверьте его или удалите из настроек.')
                 raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
-        except ConnectionAbortedError as error:
-            watchdog_logger.error(f'ConnectionAbortedError {error}')    # , exc_info=True)
-            reader = None
-            writer.close()
-            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
-            await asyncio.sleep(0)
-        except socket.gaierror as error:
-            watchdog_logger.error(f'Ошибка. Проверьте настройки.{error}')    # , exc_info=True)
-            return
+            except SystemExit:
+                exit()
+
+    except ConnectionAbortedError as error:
+        watchdog_logger.error(f'ConnectionAbortedError {error}')  # , exc_info=True)
+        await connection_close()
+    except socket.gaierror as error:
+        watchdog_logger.error(f'Ошибка соединения. Проверьте настройки.{error}')  # , exc_info=True)
+        await connection_close()
     except Exception as error:
-        watchdog_logger.error(f'Непредвиденная ошибка. {error}')    # , exc_info=True)
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except UnboundLocalError:
-            pass
-    return reader, writer
+        watchdog_logger.error(f'Непредвиденная ошибка. {error}')  # , exc_info=True)
+        await connection_close()
 
 
 async def main():
@@ -260,10 +251,9 @@ async def main():
     if Path.is_file(filepath):
         load_old_messages(filepath)
 
-    file_logger.info(f'Начинаем трансляцию из {host}:{client_port} в {Path.joinpath(Path.cwd(), history)}')
+    file_logger.info(f'Старт. Сервер {host}:{client_port}. Сохраняем в {Path.joinpath(Path.cwd(), history)}')
 
-    watchdog_queue.put_nowait(f'Connection is alive. Prompt before auth')
-    # await chat_connection(host, sender_port, token)
+    await chat_connection(host, client_port, sender_port, token)
 
     # обработка сообщений в циклах корутин
     try:
@@ -274,10 +264,8 @@ async def main():
         )
     
     except asyncio.exceptions.CancelledError as error:
-        watchdog_logger.error(f'Работа прервана вручную. {error}')
-    # except KeyboardInterrupt as error:
-    #     watchdog_logger.error(f'Работа прервана вручную. {error}')
-        
+        inform_everywhere(f'Работа прервана вручную. {error}')
+
 
 if __name__ == "__main__":
     env = Env()
