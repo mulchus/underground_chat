@@ -1,4 +1,7 @@
 import asyncio
+
+import anyio
+
 import gui
 import argparse
 import logging
@@ -159,7 +162,6 @@ def load_old_messages(filepath):
 
 async def watch_for_connection():
     while True:
-        # raise ConnectionError
         try:
             async with timeout(5) as cm:
                 watchdog_message = await watchdog_queue.get()
@@ -172,11 +174,12 @@ async def watch_for_connection():
 
 
 async def ping_pong():
-    timing = 10     # перерыв между проверками, 7200 = 2 часа
+    timing = 700     # перерыв между проверками, 7200 = 2 часа
     while True:
         try:
             async with timeout(timing) as cm:
-                await asyncio.sleep(timing-1)
+                await anyio.sleep(timing-1)
+                # await asyncio.sleep(timing-1)
                 sender_writer.write('\n\n'.encode())
                 await sender_writer.drain()
                 await sender_reader.readuntil(separator=b'\n')
@@ -214,6 +217,7 @@ async def handle_connection(host, client_port, sender_port, token):
                 task_group.cancel_scope.cancel()
             # TODO: это сообщение надо как то сделать однократным, а не в цикле корутины
             # file_logger.info('Ошибка соединения...')
+            await connection_close()
                 
         await chat_connection(host, client_port, sender_port, token)
 
@@ -282,10 +286,11 @@ async def main():
     except* asyncio.exceptions.CancelledError as excgroup:
         for _ in excgroup.exceptions:
             task_group.cancel_scope.cancel()
+        await connection_close()
         inform_everywhere(f'Работа прервана вручную.')
         
 
 if __name__ == "__main__":
     env = Env()
     env.read_env()
-    asyncio.run(main())
+    anyio.run(main)

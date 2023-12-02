@@ -52,8 +52,8 @@ async def update_tk(root_frame, interval=1 / 120):
         try:
             root_frame.update()
         except tk.TclError:
-            # if application has been destroyed/closed
-            raise TkAppClosed()
+            raise asyncio.exceptions.CancelledError
+            # raise TkAppClosed()
         await asyncio.sleep(interval)
 
 
@@ -145,3 +145,4 @@ async def draw(messages_queue, sending_queue, status_updates_queue):
     except* Exception as excgroup:
         for _ in excgroup.exceptions:
             task_group.cancel_scope.cancel()
+        raise asyncio.exceptions.CancelledError
