@@ -98,6 +98,7 @@ async def authorise(reader, writer, token):
     if 'null' in user.decode():
         return False
     else:
+        await reader.readuntil(separator=b'\n')
         user = json.loads((user.decode()).split('\n')[0])
         # token = user['account_hash']
         nickname = user['nickname']
@@ -160,14 +161,30 @@ async def watch_for_connection():
     while True:
         # raise ConnectionError
         try:
-            async with timeout(5):  # as cm:
+            async with timeout(5) as cm:
                 watchdog_message = await watchdog_queue.get()
                 if watchdog_message:
                     watchdog_logger.info(watchdog_message)
         except TimeoutError:
-        # if cm.expired:
-            send_error_everywhere('Длительное бездействие. Попытка переподключения к сети.')
-            raise ConnectionError
+            if cm.expired:
+                send_error_everywhere('Длительное бездействие. Попытка переподключения к сети.')
+                raise ConnectionError
+
+
+async def ping_pong():
+    timing = 10     # перерыв между проверками, 7200 = 2 часа
+    while True:
+        try:
+            async with timeout(timing) as cm:
+                await asyncio.sleep(timing-1)
+                sender_writer.write('\n\n'.encode())
+                await sender_writer.drain()
+                await sender_reader.readuntil(separator=b'\n')
+        except TimeoutError:
+            if cm.expired:
+                send_error_everywhere('Нет ответа от сервера. Разрываем соединение и завершаем.')
+                await connection_close()
+                exit()
 
 
 async def connection_close():
@@ -188,10 +205,11 @@ async def handle_connection(host, client_port, sender_port, token):
         try:
             async with create_task_group() as task_group:
                 task_group.start_soon(watch_for_connection)
+                task_group.start_soon(ping_pong)
                 task_group.start_soon(read_msgs)
                 task_group.start_soon(send_msgs)
 
-        except* (ConnectionError, KeyboardInterrupt, asyncio.exceptions.CancelledError) as excgroup:
+        except* (ConnectionError, KeyboardInterrupt, asyncio.exceptions.CancelledError, SystemExit) as excgroup:
             for exc in excgroup.exceptions:
                 task_group.cancel_scope.cancel()
             # TODO: это сообщение надо как то сделать однократным, а не в цикле корутины
