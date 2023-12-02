@@ -210,7 +210,7 @@ async def handle_connection(host, client_port, sender_port, token):
                 task_group.start_soon(send_msgs)
 
         except* (ConnectionError, KeyboardInterrupt, asyncio.exceptions.CancelledError, SystemExit) as excgroup:
-            for exc in excgroup.exceptions:
+            for _ in excgroup.exceptions:
                 task_group.cancel_scope.cancel()
             # TODO: это сообщение надо как то сделать однократным, а не в цикле корутины
             # file_logger.info('Ошибка соединения...')
@@ -272,18 +272,18 @@ async def main():
     file_logger.info(f'Старт. Сервер {host}:{client_port}. Сохраняем в {Path.joinpath(Path.cwd(), history)}')
 
     await chat_connection(host, client_port, sender_port, token)
-
-    # обработка сообщений в циклах корутин
-    try:
-        await asyncio.gather(
-            handle_connection(host, client_port, sender_port, token),
-            save_messages_to_file(),
-            gui.draw(messages_queue, sending_queue, status_updates_queue),
-        )
     
-    except asyncio.exceptions.CancelledError as error:
-        inform_everywhere(f'Работа прервана вручную. {error}')
-
+    try:
+        async with create_task_group() as task_group:
+            task_group.start_soon(handle_connection, host, client_port, sender_port, token)
+            task_group.start_soon(save_messages_to_file)
+            task_group.start_soon(gui.draw, messages_queue, sending_queue, status_updates_queue)
+    
+    except* asyncio.exceptions.CancelledError as excgroup:
+        for _ in excgroup.exceptions:
+            task_group.cancel_scope.cancel()
+        inform_everywhere(f'Работа прервана вручную.')
+        
 
 if __name__ == "__main__":
     env = Env()
