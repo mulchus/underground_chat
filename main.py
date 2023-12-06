@@ -1,7 +1,6 @@
 import asyncio
-
 import anyio
-
+import tkinter as tk
 import gui
 import argparse
 import logging
@@ -13,6 +12,7 @@ from environs import Env
 from pathlib import Path
 from async_timeout import timeout
 from anyio import create_task_group
+from tkinter import Entry, Button, Label
 
 
 messages_queue = asyncio.Queue()
@@ -20,6 +20,7 @@ sending_queue = asyncio.Queue()
 status_updates_queue = asyncio.Queue()
 messages_to_save_queue = asyncio.Queue()
 watchdog_queue = asyncio.Queue()
+# registr_queue = asyncio.Queue()
 
 
 file_logger = logging.getLogger('file_logger')
@@ -179,7 +180,6 @@ async def ping_pong():
         try:
             async with timeout(timing) as cm:
                 await anyio.sleep(timing-1)
-                # await asyncio.sleep(timing-1)
                 sender_writer.write('\n\n'.encode())
                 await sender_writer.drain()
                 await sender_reader.readuntil(separator=b'\n')
@@ -222,6 +222,61 @@ async def handle_connection(host, client_port, sender_port, token):
         await chat_connection(host, client_port, sender_port, token)
 
 
+async def register():
+    def process_new_message():
+        nonlocal user_input
+        user_input = reg_input.get()
+        inputs.delete(0, tk.END)
+    
+    async def get_userinput():
+        while True:
+            reg_root.update()
+            if user_input:
+                return user_input
+    
+    user_input = ''
+    reg_root = tk.Tk()
+    reg_input = tk.StringVar(reg_root)
+    reg_root.title('Чат Майнкрафтера - Регистрация')
+    
+    label = Label(height=3, width=60, bg='black', fg='white', anchor='w', justify='left')
+    inputs = Entry(borderwidth=4, textvariable=reg_input)
+    button = Button(text="Отправить", command=process_new_message)
+    label.pack(side="top", fill=tk.X, expand=True)
+    inputs.pack(side="left", fill=tk.X, expand=True)
+    button.pack()
+    
+    await sender_reader.readuntil(separator=b'\n')  # не удалять, т.к. нарушается количество считанных от сервера сообщений
+    sender_writer.write('\n'.encode())
+    await sender_writer.drain()
+    await sender_reader.readuntil(separator=b'\n')
+    inform_everywhere('Регистрация нового участника чата.')
+    label['text'] = 'Введите ваш ник: '
+    nickname = await get_userinput() + '\n'
+    sender_writer.write(nickname.encode())
+    await sender_writer.drain()
+    
+    new_user_encoding = await sender_reader.readuntil(separator=b'\n')
+    
+    new_user = json.loads((new_user_encoding.decode()).split('\n')[0])
+    token = new_user['account_hash']
+    nickname = new_user['nickname']
+    
+    with open('.env', 'a') as file:
+        file.write(f'\nTOKEN={token}\n')
+        file.write(f'NICKNAME={nickname}\n')
+        file.close()
+    
+    await sender_reader.readuntil(separator=b'\n')
+    
+    # sender_writer.close()
+    # await sender_writer.wait_closed()
+    inform_everywhere('Регистрация завершена успешно! Данные нового пользователя сохранены в файле .env.')
+    reg_root.destroy()
+    # reg_root.quit()
+    return token, nickname
+
+
 async def chat_connection(host, client_port, sender_port, token):
     global client_reader, client_writer, sender_reader, sender_writer
     # подключение к чату - авторизация с регистрацией (при необходимости)
@@ -235,13 +290,11 @@ async def chat_connection(host, client_port, sender_port, token):
 
         sender_reader, sender_writer = await asyncio.open_connection(host, sender_port)
         status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
-
-        # if not token:
-        #     token, nickname = await register(sender_reader, sender_writer)
-        message = 'Успешное соединение с сервером.'
-        file_logger.info(message)
-        watchdog_queue.put_nowait(message)
-        messages_queue.put_nowait(message)
+      
+        inform_everywhere('Успешное соединение с сервером.')
+        
+        if not token:
+            token, nickname = await register()
 
         authorised = await authorise(sender_reader, sender_writer, token)
         if not authorised:
