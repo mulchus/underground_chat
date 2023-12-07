@@ -24,8 +24,6 @@ watchdog_queue = asyncio.Queue()
 
 file_logger = logging.getLogger('file_logger')
 watchdog_logger = logging.getLogger('watchdog_logger')
-client_reader, client_writer = None, None
-sender_reader, sender_writer = None, None
 
 
 def get_args(environ):
@@ -91,8 +89,7 @@ def send_error_everywhere(message):
     messages_queue.put_nowait(message)
 
 
-async def authorise(token):
-    global client_reader, client_writer, sender_reader, sender_writer
+async def authorise(sender_reader, sender_writer, token):
     await sender_reader.readuntil(separator=b'\n')  # не удалять, нарушается количество считанных от сервера сообщений
     sender_writer.write((token + '\n').encode())
     await sender_writer.drain()
@@ -134,7 +131,7 @@ def configuring_logging(history):
     watchdog_logger.addHandler(watchdog_logger_handler)
 
 
-async def read_msgs():
+async def read_msgs(client_reader):
     while True:
         data = await client_reader.readuntil(separator=b'\n')
         message = str(f'{data.decode()}').replace('\n', '')
@@ -143,7 +140,7 @@ async def read_msgs():
         watchdog_queue.put_nowait(f'Соединение стабильно. Новое сообщение в чате.')
 
 
-async def send_msgs():
+async def send_msgs(sender_reader, sender_writer):
     while True:
         message = await sending_queue.get()
         message += '\n\n'
@@ -178,7 +175,7 @@ async def watch_for_connection():
                 raise ConnectionError
 
 
-async def ping_pong():
+async def ping_pong(client_writer, sender_reader, sender_writer):
     timing = 700     # перерыв между проверками, 7200 = 2 часа
     while True:
         try:
@@ -190,44 +187,44 @@ async def ping_pong():
         except TimeoutError:
             if cm.expired:
                 send_error_everywhere('Нет ответа от сервера. Разрываем соединение и завершаем.')
-                await connection_close()
-                exit()
+                await connection_close(client_writer, sender_writer)
+                raise asyncio.exceptions.CancelledError
 
 
-async def connection_close():
-    global client_reader, client_writer, sender_reader, sender_writer
+async def connection_close(client_writer, sender_writer):
     time.sleep(1)
-    try:    # при запуске скрипта без интернета выдает AttributeError, надо игнорить
+    if client_writer and sender_writer:
         client_writer.close()
         sender_writer.close()
-    except AttributeError:
-        exit()
     status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
     status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
 
 
-async def handle_connection(host, client_port, sender_port, token):
-    global client_reader, client_writer, sender_reader, sender_writer
+async def handle_connection(client_reader, client_writer, sender_reader, sender_writer,
+                            host, client_port, sender_port, token):
     while True:
         try:
+            if not (client_reader and client_writer and sender_reader and sender_writer):
+                raise ConnectionError
             async with create_task_group() as task_group:
                 task_group.start_soon(watch_for_connection)
-                task_group.start_soon(ping_pong)
-                task_group.start_soon(read_msgs)
-                task_group.start_soon(send_msgs)
+                task_group.start_soon(ping_pong, client_writer, sender_reader, sender_writer)
+                task_group.start_soon(read_msgs, client_reader)
+                task_group.start_soon(send_msgs, sender_reader, sender_writer)
 
-        except* (ConnectionError, KeyboardInterrupt, asyncio.exceptions.CancelledError, SystemExit) as excgroup:
+        except* ConnectionError as excgroup:
             for _ in excgroup.exceptions:
                 task_group.cancel_scope.cancel()
             # TODO: это сообщение надо как то сделать однократным, а не в цикле корутины
             # file_logger.info('Ошибка соединения...')
-            await connection_close()
-                
-        if await connection_server(host, client_port, sender_port):
-            await authorise(token)
+            await connection_close(client_writer, sender_writer)
+            client_reader, client_writer, sender_reader, sender_writer = \
+                await connection_server(host, client_port, sender_port)
+            if sender_reader and sender_writer:
+                await authorise(sender_reader, sender_writer, token)
 
 
-async def register():
+async def register(sender_reader, sender_writer):
     def process_new_message():
         nonlocal user_input
         user_input = reg_input.get()
@@ -279,7 +276,8 @@ async def register():
 
 
 async def connection_server(host, client_port, sender_port):
-    global client_reader, client_writer, sender_reader, sender_writer
+    client_reader, client_writer = None, None
+    sender_reader, sender_writer = None, None
     
     try:
         status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
@@ -292,30 +290,19 @@ async def connection_server(host, client_port, sender_port):
         status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
         
         inform_everywhere('Успешное соединение с сервером.')
-        return True
    
     except ConnectionAbortedError as error:
-        watchdog_logger.error(f'ConnectionAbortedError {error}')  # , exc_info=True)
-        await connection_close()
+        watchdog_logger.error(f'ConnectionAbortedError {error}')
+        await connection_close(client_writer, sender_writer)
     except socket.gaierror as error:
-        watchdog_logger.error(f'Ошибка соединения. Проверьте настройки.{error}')  # , exc_info=True)
-        await connection_close()
+        watchdog_logger.error(f'Ошибка соединения. Проверьте настройки.{error}')
+        await connection_close(client_writer, sender_writer)
     except Exception as error:
-        watchdog_logger.error(f'Непредвиденная ошибка. {error}')  # , exc_info=True)
-        await connection_close()
+        watchdog_logger.error(f'Непредвиденная ошибка. {error}')
+        await connection_close(client_writer, sender_writer)
     
-
-# async def connection_chat(token):
-#     global client_reader, client_writer, sender_reader, sender_writer
-#     authorised = await authorise(sender_reader, sender_writer, token)
-#     if not authorised:
-#         sender_writer.close()
-#         await sender_writer.wait_closed()
-#         try:
-#             send_error_everywhere('Неизвестный токен. Проверьте его или удалите из настроек.')
-#             raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
-#         except SystemExit:
-#             exit()
+    finally:
+        return client_reader, client_writer, sender_reader, sender_writer
 
 
 async def main():
@@ -329,26 +316,29 @@ async def main():
 
     file_logger.info(f'Старт. Сервер {host}:{client_port}. Сохраняем в {Path.joinpath(Path.cwd(), history)}')
 
-    await connection_server(host, client_port, sender_port)
-    
+    client_reader, client_writer, sender_reader, sender_writer = await connection_server(host, client_port, sender_port)
+    if not (client_reader and client_writer and sender_reader and sender_writer):
+        exit()
+        
     if not token:
-        token, nickname = await register()
+        token, nickname = await register(sender_reader, sender_writer)
         inform_everywhere(f'Успешная авторизация пользователя {nickname}.')
         event = gui.NicknameReceived(f' {nickname}')
         status_updates_queue.put_nowait(event)
     else:
-        await authorise(token)
+        await authorise(sender_reader, sender_writer, token)
     
     try:
         async with create_task_group() as task_group:
-            task_group.start_soon(handle_connection, host, client_port, sender_port, token)
+            task_group.start_soon(handle_connection, client_reader, client_writer, sender_reader, sender_writer,
+                                  host, client_port, sender_port, token)
             task_group.start_soon(save_messages_to_file)
             task_group.start_soon(gui.draw, messages_queue, sending_queue, status_updates_queue)
     
-    except* asyncio.exceptions.CancelledError as excgroup:
+    except* (BaseException, SystemExit) as excgroup:
         for _ in excgroup.exceptions:
             task_group.cancel_scope.cancel()
-        await connection_close()
+        await connection_close(client_writer, sender_writer)
         inform_everywhere(f'Работа прервана вручную.')
         
 

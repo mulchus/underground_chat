@@ -52,8 +52,7 @@ async def update_tk(root_frame, interval=1 / 120):
         try:
             root_frame.update()
         except tk.TclError:
-            raise asyncio.exceptions.CancelledError
-            # raise TkAppClosed()
+            raise TkAppClosed()
         await asyncio.sleep(interval)
 
 
@@ -137,12 +136,12 @@ async def draw(messages_queue, sending_queue, status_updates_queue):
     conversation_panel.pack(side="top", fill="both", expand=True)
     
     try:
-        async with create_task_group() as task_group:
-            task_group.start_soon(update_tk, root_frame)
-            task_group.start_soon(update_conversation_history, conversation_panel, messages_queue)
-            task_group.start_soon(update_status_panel, status_labels, status_updates_queue)
+        async with create_task_group() as task_gui_group:
+            task_gui_group.start_soon(update_tk, root_frame)
+            task_gui_group.start_soon(update_conversation_history, conversation_panel, messages_queue)
+            task_gui_group.start_soon(update_status_panel, status_labels, status_updates_queue)
     
     except* Exception as excgroup:
         for _ in excgroup.exceptions:
-            task_group.cancel_scope.cancel()
-        raise asyncio.exceptions.CancelledError
+            task_gui_group.cancel_scope.cancel()
+        raise TkAppClosed
