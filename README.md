@@ -68,10 +68,11 @@ python3 main.py --host minechat.dvmn.org --client_port 5000 --history chat/1.txt
 Необходимо ввести имя.   
 Скрипт запишет полное имя и токен вновь созданного юзера в файл .env.   
 Окно регистрации  
+![reg](https://github.com/mulchus/underground_chat/assets/111083714/42421773-2fcf-4a95-a60b-13c525438e43)
 
 
 ## Пример работы скрипта
-
+![chat](https://github.com/mulchus/underground_chat/assets/111083714/f21922e3-ab98-42d1-8062-78b5bbc25f92)
 
 После повторного запуска скрипта сначала в окно чата подгрузятся старые сообщения, что может занять некоторое время.  
 
