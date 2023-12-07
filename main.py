@@ -20,7 +20,6 @@ sending_queue = asyncio.Queue()
 status_updates_queue = asyncio.Queue()
 messages_to_save_queue = asyncio.Queue()
 watchdog_queue = asyncio.Queue()
-# registr_queue = asyncio.Queue()
 
 
 file_logger = logging.getLogger('file_logger')
@@ -92,24 +91,29 @@ def send_error_everywhere(message):
     messages_queue.put_nowait(message)
 
 
-async def authorise(reader, writer, token):
-    await reader.readuntil(separator=b'\n')     # не удалять, т.к. нарушается количество считанных от сервера сообщений
-
-    writer.write((token + '\n').encode())
-    await writer.drain()
-
-    user = await reader.readuntil(separator=b'\n')
+async def authorise(token):
+    global client_reader, client_writer, sender_reader, sender_writer
+    await sender_reader.readuntil(separator=b'\n')  # не удалять, нарушается количество считанных от сервера сообщений
+    sender_writer.write((token + '\n').encode())
+    await sender_writer.drain()
+    user = await sender_reader.readuntil(separator=b'\n')
+    
     if 'null' in user.decode():
-        return False
+        sender_writer.close()
+        await sender_writer.wait_closed()
+        try:
+            send_error_everywhere('Неизвестный токен. Проверьте его или удалите из настроек.')
+            raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
+        except SystemExit:
+            exit()
+            
     else:
-        await reader.readuntil(separator=b'\n')
+        await sender_reader.readuntil(separator=b'\n')
         user = json.loads((user.decode()).split('\n')[0])
-        # token = user['account_hash']
         nickname = user['nickname']
         inform_everywhere(f'Успешная авторизация пользователя {nickname}.')
         event = gui.NicknameReceived(f' {nickname}')
         status_updates_queue.put_nowait(event)
-        return True
 
 
 def configuring_logging(history):
@@ -219,7 +223,8 @@ async def handle_connection(host, client_port, sender_port, token):
             # file_logger.info('Ошибка соединения...')
             await connection_close()
                 
-        await chat_connection(host, client_port, sender_port, token)
+        if await connection_server(host, client_port, sender_port):
+            await authorise(token)
 
 
 async def register():
@@ -246,7 +251,7 @@ async def register():
     inputs.pack(side="left", fill=tk.X, expand=True)
     button.pack()
     
-    await sender_reader.readuntil(separator=b'\n')  # не удалять, т.к. нарушается количество считанных от сервера сообщений
+    await sender_reader.readuntil(separator=b'\n')  # не удалять, нарушается количество считанных от сервера сообщений
     sender_writer.write('\n'.encode())
     await sender_writer.drain()
     await sender_reader.readuntil(separator=b'\n')
@@ -268,44 +273,27 @@ async def register():
         file.close()
     
     await sender_reader.readuntil(separator=b'\n')
-    
-    # sender_writer.close()
-    # await sender_writer.wait_closed()
     inform_everywhere('Регистрация завершена успешно! Данные нового пользователя сохранены в файле .env.')
     reg_root.destroy()
-    # reg_root.quit()
     return token, nickname
 
 
-async def chat_connection(host, client_port, sender_port, token):
+async def connection_server(host, client_port, sender_port):
     global client_reader, client_writer, sender_reader, sender_writer
-    # подключение к чату - авторизация с регистрацией (при необходимости)
-
+    
     try:
         status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
         status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
-
+        
         client_reader, client_writer = await asyncio.open_connection(host, client_port)
         status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
-
+        
         sender_reader, sender_writer = await asyncio.open_connection(host, sender_port)
         status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
-      
-        inform_everywhere('Успешное соединение с сервером.')
         
-        if not token:
-            token, nickname = await register()
-
-        authorised = await authorise(sender_reader, sender_writer, token)
-        if not authorised:
-            sender_writer.close()
-            await sender_writer.wait_closed()
-            try:
-                send_error_everywhere('Неизвестный токен. Проверьте его или удалите из настроек.')
-                raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
-            except SystemExit:
-                exit()
-
+        inform_everywhere('Успешное соединение с сервером.')
+        return True
+   
     except ConnectionAbortedError as error:
         watchdog_logger.error(f'ConnectionAbortedError {error}')  # , exc_info=True)
         await connection_close()
@@ -315,6 +303,19 @@ async def chat_connection(host, client_port, sender_port, token):
     except Exception as error:
         watchdog_logger.error(f'Непредвиденная ошибка. {error}')  # , exc_info=True)
         await connection_close()
+    
+
+# async def connection_chat(token):
+#     global client_reader, client_writer, sender_reader, sender_writer
+#     authorised = await authorise(sender_reader, sender_writer, token)
+#     if not authorised:
+#         sender_writer.close()
+#         await sender_writer.wait_closed()
+#         try:
+#             send_error_everywhere('Неизвестный токен. Проверьте его или удалите из настроек.')
+#             raise gui.InvalidToken('Проблема с токеном', 'Проверьте токен. Сервер его не узнал')
+#         except SystemExit:
+#             exit()
 
 
 async def main():
@@ -328,7 +329,15 @@ async def main():
 
     file_logger.info(f'Старт. Сервер {host}:{client_port}. Сохраняем в {Path.joinpath(Path.cwd(), history)}')
 
-    await chat_connection(host, client_port, sender_port, token)
+    await connection_server(host, client_port, sender_port)
+    
+    if not token:
+        token, nickname = await register()
+        inform_everywhere(f'Успешная авторизация пользователя {nickname}.')
+        event = gui.NicknameReceived(f' {nickname}')
+        status_updates_queue.put_nowait(event)
+    else:
+        await authorise(token)
     
     try:
         async with create_task_group() as task_group:
